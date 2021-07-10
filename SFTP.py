@@ -25,6 +25,7 @@ import socket
 import os
 import struct
 import argparse
+import threading
 from typing import NamedTuple, Union
 
 SFTP_VERSION = 1
@@ -41,9 +42,13 @@ class SSDP:
     _sock: socket.socket
     _service_name: bytes
     _service_port: int
+    _service_thread: Union[threading.Thread, None]
+    _service_event: Union[threading.Event, None]
     def __init__(self, name: str, port: int):
         self._service_name = struct.pack('16s', name.encode('UTF-8'))
         self._service_port = port
+        self._service_thread = None
+        self._service_event = None
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
         self._sock.bind(('', self.SSDP_PORT))
@@ -72,7 +77,18 @@ class SSDP:
         except struct.error:
             response = struct.pack('BB', self.SSDP_VERSION, 2)
             self._sock.sendto(response, addr)
+    def _inf_loop(self):
+        self._service_event = threading.Event()
+        self._sock.setblocking(True)
+        while (not self._service_event.is_set()):
+            self.loop()
+    def start(self) -> None:
+        self._service_thread = threading.Thread(target=self._inf_loop, daemon=True)
+        self._service_thread.start()
     def close(self) -> None:
+        if (self._service_thread and self._service_event):
+            self._service_event.set()
+            self._service_thread.join()
         self._sock.close()
     @classmethod
     def find_service(cls, name: str, timeout: float = None) -> Union[Address, None]:
@@ -93,6 +109,10 @@ class SSDP:
             if (res_name == request[2:]):
                 return Address(addr[0], res_port)
         return None
+
+class SFTP:
+    SFTP_VERSION = 1
+    SFTP_BUFFER_SIZE = 8192
 
 def send(host: str, port: int, filename: str, timeout: float = None) -> None:
     stat = os.stat(filename)
@@ -161,20 +181,14 @@ def receive(port: int = 0, alternativeFilename: str = None, timeout: float = Non
 
 def receiveFriendly(name: str, port: int = 0, alternativeFilename: str = None, timeout: float = None) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
     sock.bind(('', port))
     if (not port):
         port = sock.getsockname()[1]
     sock.listen(1)
-    sock.setblocking(False)
     service = SSDP(name, port)
-    success = False
-    while (not success):
-        try:
-            service.loop()
-            conn_sock, conn_addr = sock.accept()
-            success = True
-        except BlockingIOError:
-            pass
+    service.start()
+    conn_sock, conn_addr = sock.accept()
     conn_sock.settimeout(timeout)
     service.close()
     sock.close()
@@ -224,7 +238,9 @@ def main():
     parser.add_argument('-h', '--host', type=str, dest='host',
         help='SEND_MODE: (IP or Friendly name) to send to | RECEIVE_MODE: Friendly name to use')
     parser.add_argument('-f', '--file', type=str, dest='filename',
-        help='SEND_MODE: File to send | RECEIVE_MODE: Alternative filename if conflict occurs')
+        help='SEND_MODE: Name of file to send | RECEIVE_MODE: Override received file name')
+    parser.add_argument('-zf', '--zip-file', action='store_true', dest='zipfile',
+        help='SEND_MODE: File/Directory to zip before sending | RECEIVE_MODE: Unzip data after receiving')
     args = parser.parse_args()
     if (args.mode == 'send'):
         if (args.filename):
