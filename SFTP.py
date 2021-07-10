@@ -58,7 +58,7 @@ class SSDP:
     def loop(self) -> None:
         try:
             packet, addr = self._sock.recvfrom(18)
-        except BlockingIOError:
+        except (BlockingIOError, OSError):
             return
         header = packet[:2]
         data = packet[2:]
@@ -86,10 +86,10 @@ class SSDP:
         self._service_thread = threading.Thread(target=self._inf_loop, daemon=True)
         self._service_thread.start()
     def close(self) -> None:
+        self._sock.close()
         if (self._service_thread and self._service_event):
             self._service_event.set()
             self._service_thread.join()
-        self._sock.close()
     @classmethod
     def find_service(cls, name: str, timeout: float = None) -> Union[Address, None]:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -109,10 +109,6 @@ class SSDP:
             if (res_name == request[2:]):
                 return Address(addr[0], res_port)
         return None
-
-class SFTP:
-    SFTP_VERSION = 1
-    SFTP_BUFFER_SIZE = 8192
 
 def send(host: str, port: int, filename: str, timeout: float = None) -> None:
     stat = os.stat(filename)
