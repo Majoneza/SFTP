@@ -20,13 +20,15 @@
 
 # Add SSFTP (Secure Simple File Transfer Protocol)
 
+from __future__ import annotations
 from io import BufferedWriter
 import socket
 import os
 import struct
 import argparse
 import threading
-from typing import NamedTuple, Union
+import abc
+from typing import Dict, NamedTuple, Union
 
 SFTP_VERSION = 1
 SFTP_BUFFER_SIZE = 8192
@@ -91,7 +93,7 @@ class SSDP:
             self._service_event.set()
             self._service_thread.join()
     @classmethod
-    def find_service(cls, name: str, timeout: float = None) -> Union[Address, None]:
+    def find_service(cls, name: str, timeout: Union[float, None] = None) -> Union[Address, None]:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
@@ -110,110 +112,162 @@ class SSDP:
                 return Address(addr[0], res_port)
         return None
 
-def send(host: str, port: int, filename: str, timeout: float = None) -> None:
-    stat = os.stat(filename)
-    file = open(filename, 'rb')
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    sock.connect((host, port))
-    # Pack the packet
-    filename_bytes = filename.encode('UTF-8')
-    data = struct.pack('BHi', SFTP_VERSION, len(filename_bytes), stat.st_size)
-    sock.send(data)
-    # Send filename
-    sock.send(filename_bytes)
-    # Send file
-    send_amount = 0
-    data = file.read(SFTP_BUFFER_SIZE)
-    while data:
-        send_amount += len(data)
-        sock.send(data)
+class SFTP(metaclass=abc.ABCMeta):
+    SFTP_VERSION = 1
+    SFTP_BUFFER_SIZE = 8192
+    _sock: socket.socket
+    def __init__(self):
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def close(self):
+        self._sock.close()
+
+class SFTPSender(SFTP):
+    def connect(self, host: str, port: int, timeout: Union[float, None] = None) -> bool:
+        self._sock.settimeout(timeout)
+        try:
+            self._sock.connect((host, port))
+        except socket.timeout:
+            return False
+        return True
+    def connectFriendly(self, name: str, timeout: Union[float, None] = None) -> bool:
+        address = SSDP.find_service(name, timeout)
+        if (address):
+            return self.connect(address.ip, address.port, timeout)
+        return False
+    def sendFile(self, filename: str, timeout: Union[float, None] = None) -> None:
+        self._sock.settimeout(timeout)
+        stat = os.stat(filename)
+        file = open(filename, 'rb')
+        # Pack the packet
+        filename_bytes = filename.encode('UTF-8')
+        data = struct.pack('BHi', SFTP_VERSION, len(filename_bytes), stat.st_size)
+        self._sock.sendall(data)
+        # Send filename
+        self._sock.sendall(filename_bytes)
+        # Send file
+        total_send_amount = 0
         data = file.read(SFTP_BUFFER_SIZE)
-        print(f'\r[{round(send_amount / stat.st_size * 100, 2)}%]', end='')
-    file.close()
-    sock.close()
+        while data:
+            send_amount = self._sock.send(data)
+            if (len(data) > send_amount):
+                data = data[send_amount:]
+            else:
+                total_send_amount += len(data)
+                data = file.read(SFTP_BUFFER_SIZE)
+            print(f'\r[{round(total_send_amount / stat.st_size * 100, 2)}%]', end=None)
+        print()
+        file.close()
 
-def sendFriendly(name: str, filename: str, timeout: float = None) -> None:
-    address = SSDP.find_service(name, timeout)
-    if (not address):
-        raise Exception('Unable to find service')
-    send(address.ip, address.port, filename, timeout)
-
-def receive(port: int = 0, alternativeFilename: str = None, timeout: float = None) -> None:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    sock.bind(('', port))
-    sock.listen(1)
-    print(f'Listening on {sock.getsockname()[1]}')
-    conn_sock, conn_addr = sock.accept()
-    conn_sock.settimeout(timeout)
-    sock.close()
-    print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
-    # Version, File size, Filename characters count
-    data = conn_sock.recv(8)
-    version, filename_characters_amount, file_size = struct.unpack('BHi', data)
-    if (version != SFTP_VERSION):
-        raise Exception('Unsupported protocol version')
-    # Filename
-    filename = conn_sock.recv(filename_characters_amount).decode('UTF-8')
-    # Open file
-    file: BufferedWriter
-    try:
-        file = open(filename, 'xb')
-    except FileExistsError as e:
-        if (not alternativeFilename):
-            raise e
-        file = open(alternativeFilename, 'xb')
-    # Download file
-    received_amount = 0
-    data = conn_sock.recv(SFTP_BUFFER_SIZE)
-    while data:
-        received_amount += len(data)
-        file.write(data)
+class SFTPReceiver(SFTP):
+    def __init__(self, port: int = 0):
+        super().__init__()
+        self._sock.bind(('', port))
+        self._sock.listen()
+    def _print(self, message: str, end: Union[str, None] = None) -> None:
+        print(message, end=end)
+    def _receive_file(self, conn_sock: socket.socket, alternativeFilename: Union[str, None], timeout: Union[float, None]) -> None:
+        conn_sock.settimeout(timeout)
+        # Version, File size, Filename characters count
+        data = conn_sock.recv(8)
+        version, filename_characters_amount, file_size = struct.unpack('BHi', data)
+        if (version != SFTP_VERSION):
+            raise Exception('Unsupported protocol version')
+        # Filename
+        filename = conn_sock.recv(filename_characters_amount).decode('UTF-8')
+        # Open file
+        file: BufferedWriter
+        try:
+            file = open(filename, 'xb')
+        except FileExistsError as e:
+            if (not alternativeFilename):
+                raise e
+            file = open(alternativeFilename, 'xb')
+        # Download file
+        received_amount = 0
         data = conn_sock.recv(SFTP_BUFFER_SIZE)
-        print(f'\r[{round(received_amount / file_size * 100, 2)}%]', end='')
-    file.close()
-    conn_sock.close()
+        while data:
+            received_amount += len(data)
+            file.write(data)
+            data = conn_sock.recv(SFTP_BUFFER_SIZE)
+            self._print(f'\r[{round(received_amount / file_size * 100, 2)}%]', end=None)
+        self._print('')
+        file.close()
+        conn_sock.close()
+    def _receive_multiple_files(self, conn_sock: socket.socket, amount: int, timeout: Union[float, None]) -> None:
+        while amount:
+            amount -= 1
+            self._receive_file(conn_sock, None, timeout)
+    def _receive_sock(self, timeout: Union[float, None] = None) -> socket.socket:
+        self._sock.settimeout(timeout)
+        self._print(f'Listening on {self._sock.getsockname()[1]}')
+        conn_sock, conn_addr = self._sock.accept()
+        self._print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
+        return conn_sock
+    def _receive_friendly_sock(self, name: str, timeout: Union[float, None] = None) -> socket.socket:
+        self._sock.settimeout(timeout)
+        port = self._sock.getsockname()[1]
+        service = SSDP(name, port)
+        service.start()
+        conn_sock, conn_addr = self._sock.accept()
+        self._print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
+        service.close()
+        return conn_sock
+    def receive(self, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+        conn_sock = self._receive_sock(timeout)
+        self._receive_file(conn_sock, alternativeFilename, timeout)
+    def receiveFriendly(self, name: str, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+        conn_sock = self._receive_friendly_sock(name, timeout)
+        self._receive_file(conn_sock, alternativeFilename, timeout)
+    def receiveMultiple(self, amount: int, timeout: Union[float, None] = None) -> None:
+        conn_sock = self._receive_sock(timeout)
+        self._receive_multiple_files(conn_sock, amount, timeout)
+    def receiveFriendlyMultiple(self, name: str, amount: int, timeout: Union[float, None] = None) -> None:
+        conn_sock = self._receive_friendly_sock(name, timeout)
+        self._receive_multiple_files(conn_sock, amount, timeout)
 
-def receiveFriendly(name: str, port: int = 0, alternativeFilename: str = None, timeout: float = None) -> None:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    sock.bind(('', port))
-    if (not port):
-        port = sock.getsockname()[1]
-    sock.listen(1)
-    service = SSDP(name, port)
-    service.start()
-    conn_sock, conn_addr = sock.accept()
-    conn_sock.settimeout(timeout)
-    service.close()
-    sock.close()
-    print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
-    # Version, File size, Filename characters count
-    data = conn_sock.recv(8)
-    version, filename_characters_amount, file_size = struct.unpack('BHi', data)
-    if (version != SFTP_VERSION):
-        raise Exception('Unsupported protocol version')
-    # Filename
-    filename = conn_sock.recv(filename_characters_amount).decode('UTF-8')
-    # Open file
-    file: BufferedWriter
-    try:
-        file = open(filename, 'xb')
-    except FileExistsError as e:
-        if (not alternativeFilename):
-            raise e
-        file = open(alternativeFilename, 'xb')
-    # Download file
-    received_amount = 0
-    data = conn_sock.recv(SFTP_BUFFER_SIZE)
-    while data:
-        received_amount += len(data)
-        file.write(data)
-        data = conn_sock.recv(SFTP_BUFFER_SIZE)
-        print(f'\r[{round(received_amount / file_size * 100, 2)}%]', end='')
-    file.close()
-    conn_sock.close()
+class ThreadingSFTPReceiver(SFTPReceiver):
+    _MAIN_THREAD_ID = threading.main_thread().ident
+    _thread_messages: Dict[int, str]
+    _print_lock: threading.Lock
+    def __init__(self, port: int = 0):
+        super().__init__(port)
+        self._thread_messages = {}
+        self._print_lock = threading.Lock()
+    def _print(self, message: str, end: Union[str, None] = None) -> None:
+        thread_id = threading.get_ident()
+        with self._print_lock:
+            if (thread_id == self._MAIN_THREAD_ID):
+                print('\r', message)
+            else:
+                self._thread_messages[thread_id] = message
+            print('\r', self._thread_messages.values(), end=end)
+    def treceive(self, accept: int = 1, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+        self._sock.settimeout(timeout)
+        self._print(f'Listening on {self._sock.getsockname()[1]}')
+        while accept:
+            accept -= 1
+            try:
+                conn_sock, conn_addr = self._sock.accept()
+            except socket.timeout:
+                continue
+            self._print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
+            thread = threading.Thread(target=self._receive_file, args=(conn_sock, alternativeFilename, timeout), daemon=True)
+            thread.start()
+    def treceiveFriendly(self, name: str, accept: int = 1, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+        self._sock.settimeout(timeout)
+        port = self._sock.getsockname()[1]
+        service = SSDP(name, port)
+        service.start()
+        while accept:
+            accept -= 1
+            try:
+                conn_sock, conn_addr = self._sock.accept()
+            except socket.timeout:
+                continue
+            self._print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
+            thread = threading.Thread(target=self._receive_file, args=(conn_sock, alternativeFilename, timeout), daemon=True)
+            thread.start()
+        service.close()
 
 def isIP(addr: str) -> bool:
     try:
@@ -243,18 +297,34 @@ def main():
             if (isIP(args.host)):
                 if (not args.port):
                     raise Exception('No port specified')
-                send(args.host, args.port, args.filename, args.timeout)
+                sender = SFTPSender()
+                if (sender.connect(args.host, args.port, args.timeout)):
+                    sender.sendFile(args.filename, args.timeout)
+                else:
+                    sender.close()
+                    raise Exception('Unable to connect')
+                sender.close()
             else:
-                sendFriendly(args.host, args.filename, args.timeout)
+                sender = SFTPSender()
+                if (sender.connectFriendly(args.host, args.timeout)):
+                    sender.sendFile(args.filename, args.timeout)
+                else:
+                    sender.close()
+                    raise Exception('Unable to connect')
+                sender.close()
         else:
             raise Exception('No file specified')
     elif (args.mode == 'receive'):
         if (not args.port):
             args.port = 0
         if (isIP(args.host)):
-            receive(args.port, args.filename, args.timeout)
+            receiver = SFTPReceiver(args.port)
+            receiver.receive(args.filename, args.timeout)
+            receiver.close()
         else:
-            receiveFriendly(args.host, args.port, args.filename, args.timeout)
+            receiver = SFTPReceiver(args.port)
+            receiver.receiveFriendly(args.host, args.filename, args.timeout)
+            receiver.close()
     else:
         raise Exception('Unknown mode')
 
