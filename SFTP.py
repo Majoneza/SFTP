@@ -326,8 +326,8 @@ class nnint(int):
 def main():
     parser = argparse.ArgumentParser(description="Simple File Transfer Protocol",
         conflict_handler='resolve')
-    parser.add_argument('-m --mode', dest='mode', choices=['send', 'receive'],
-        help='Set mode')
+    parser.add_argument('-m --mode', dest='mode', choices=['send', 'receive', 's', 'r'],
+        help='Set mode to SEND or RECEIVE')
     parser.add_argument('-t', '--timeout', type=nnint, dest='timeout',
         help='Set timeout(in seconds)')
     parser.add_argument('-p', '--port', type=nnint, dest='port',
@@ -340,12 +340,15 @@ def main():
         help='RECEIVE_MODE: How many connections to accept (default = 1)')
     parser.add_argument('-c', '--count', type=pint, default=1, dest='count',
         help='RECEIVE_MODE: How many files to receive (default = 1)')
+    parser.add_argument('-d', '--dir', type=str, default='./', dest='dir',
+        help='Set root directory(default=\'./\'')
     parser.add_argument('-zf', '--zip-file', action='store_true', dest='zipfile',
         help='SEND_MODE: File/Directory to zip before sending | RECEIVE_MODE: Unzip data after receiving')
     parser.add_argument('files', type=str, nargs='*',
         help='SEND_MODE: Name of file(s) to send | RECEIVE_MODE: Override received file(s) name')
     args = parser.parse_args()
-    if (args.mode == 'send'):
+    os.chdir(args.dir)
+    if (args.mode == 's' or args.mode == 'send'):
         if (len(args.files) > 0):
             connect: Callable[[SFTPSender], bool]
             if (isIP(args.host)):
@@ -364,7 +367,7 @@ def main():
             sender.close()
         else:
             raise Exception('No file specified')
-    elif (args.mode == 'receive'):
+    elif (args.mode == 'r' or args.mode == 'receive'):
         args.files = CustomList(args.files)
         if (not args.port):
             args.port = 0
