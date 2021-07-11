@@ -161,7 +161,7 @@ class SFTPSender(SFTP):
             else:
                 total_send_amount += len(data)
                 data = file.read(SFTP_BUFFER_SIZE)
-            print(f'\r[{round(total_send_amount / stat.st_size * 100, 2)}%]', end=None)
+            print(f'\r[{round(total_send_amount / stat.st_size * 100, 2)}%]', end='')
         print()
         file.close()
 
@@ -170,7 +170,7 @@ class SFTPReceiver(SFTP):
         super().__init__()
         self._sock.bind(('', port))
         self._sock.listen()
-    def _print(self, message: str, end: Union[str, None] = None) -> None:
+    def _print(self, message: str, end: Union[str, None] = '\n') -> None:
         print(message, end=end)
     def _receive_file(self, conn_sock: socket.socket, alternativeFilename: Union[str, None], timeout: Union[float, None]) -> None:
         conn_sock.settimeout(timeout)
@@ -196,7 +196,7 @@ class SFTPReceiver(SFTP):
             received_amount += len(data)
             file.write(data)
             data = conn_sock.recv(SFTP_BUFFER_SIZE)
-            self._print(f'\r[{round(received_amount / file_size * 100, 2)}%]', end=None)
+            self._print(f'\r[{round(received_amount / file_size * 100, 2)}%]', end='')
         self._print('')
         file.close()
         conn_sock.close()
@@ -245,7 +245,7 @@ class ThreadingSFTPReceiver(SFTPReceiver):
         super().__init__(port)
         self._thread_messages = {}
         self._print_lock = threading.Lock()
-    def _print(self, message: str, end: Union[str, None] = None) -> None:
+    def _print(self, message: str, end: Union[str, None] = '\n') -> None:
         thread_id = threading.get_ident()
         with self._print_lock:
             if (thread_id == self._MAIN_THREAD_ID):
@@ -362,9 +362,9 @@ def main():
             receiver = SFTPReceiver(args.port)
             if (args.count == 1):
                 if (args.name):
-                    receiver.receiveFriendly(args.name, args.files, args.timeout)
+                    receiver.receiveFriendly(args.name, args.files[0], args.timeout)
                 else:
-                    receiver.receive(args.files, args.timeout)
+                    receiver.receive(args.files[0], args.timeout)
             else:
                 if (args.name):
                     receiver.receiveMultipleFriendly(args.name, args.count, args.files, args.timeout)
@@ -375,9 +375,9 @@ def main():
             receiver = ThreadingSFTPReceiver(args.port)
             if (args.count == 1):
                 if (args.name):
-                    receiver.treceiveFriendly(args.name, args.accept, args.files, args.timeout)
+                    receiver.treceiveFriendly(args.name, args.accept, args.files[0], args.timeout)
                 else:
-                    receiver.treceive(args.accept, args.files, args.timeout)
+                    receiver.treceive(args.accept, args.files[0], args.timeout)
             else:
                 if (args.name):
                     receiver.treceiveMultipleFriendly(args.name, args.accept, args.count, args.files, args.timeout)
