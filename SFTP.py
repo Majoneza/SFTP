@@ -28,19 +28,26 @@ import struct
 import argparse
 import threading
 import abc
-from typing import Dict, NamedTuple, Union
+from typing import Callable, ClassVar, Dict, Final, Generator, List, NamedTuple, TypeVar, Union
 
 SFTP_VERSION = 1
 SFTP_BUFFER_SIZE = 8192
+
+T = TypeVar('T')
+class CustomList(List[T]):
+    def popper(self, __index: int) -> Union[T, None]:
+        if (len(self) > 0):
+            return self.pop(__index)
+        return None
 
 class Address(NamedTuple):
     ip: str
     port: int
 
 class SSDP:
-    SSDP_VERSION = 1
-    SSDP_MULTICAST = '239.255.255.250'
-    SSDP_PORT = 12000
+    SSDP_VERSION: Final[int] = 1
+    SSDP_MULTICAST: Final[str] = '239.255.255.250'
+    SSDP_PORT: Final[int] = 12000
     _sock: socket.socket
     _service_name: bytes
     _service_port: int
@@ -113,8 +120,8 @@ class SSDP:
         return None
 
 class SFTP(metaclass=abc.ABCMeta):
-    SFTP_VERSION = 1
-    SFTP_BUFFER_SIZE = 8192
+    SFTP_VERSION: Final[int] = 1
+    SFTP_BUFFER_SIZE: Final[int] = 8192
     _sock: socket.socket
     def __init__(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -193,10 +200,15 @@ class SFTPReceiver(SFTP):
         self._print('')
         file.close()
         conn_sock.close()
-    def _receive_multiple_files(self, conn_sock: socket.socket, amount: int, timeout: Union[float, None]) -> None:
+    def _receive_multiple_files(self, conn_sock: socket.socket, amount: int, alternativeFilenames: Union[List[str], None], timeout: Union[float, None]) -> None:
+        if (alternativeFilenames):
+            alternativeFilenames = CustomList(alternativeFilenames)
+        else:
+            alternativeFilenames = CustomList()
         while amount:
             amount -= 1
-            self._receive_file(conn_sock, None, timeout)
+            name = alternativeFilenames.popper(0)
+            self._receive_file(conn_sock, name, timeout)
     def _receive_sock(self, timeout: Union[float, None] = None) -> socket.socket:
         self._sock.settimeout(timeout)
         self._print(f'Listening on {self._sock.getsockname()[1]}')
@@ -218,15 +230,15 @@ class SFTPReceiver(SFTP):
     def receiveFriendly(self, name: str, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
         conn_sock = self._receive_friendly_sock(name, timeout)
         self._receive_file(conn_sock, alternativeFilename, timeout)
-    def receiveMultiple(self, amount: int, timeout: Union[float, None] = None) -> None:
+    def receiveMultiple(self, amount: int, alternativeFilenames: Union[List[str], None] = None, timeout: Union[float, None] = None) -> None:
         conn_sock = self._receive_sock(timeout)
-        self._receive_multiple_files(conn_sock, amount, timeout)
-    def receiveFriendlyMultiple(self, name: str, amount: int, timeout: Union[float, None] = None) -> None:
+        self._receive_multiple_files(conn_sock, amount, alternativeFilenames, timeout)
+    def receiveMultipleFriendly(self, name: str, amount: int, alternativeFilenames: Union[List[str], None] = None, timeout: Union[float, None] = None) -> None:
         conn_sock = self._receive_friendly_sock(name, timeout)
-        self._receive_multiple_files(conn_sock, amount, timeout)
+        self._receive_multiple_files(conn_sock, amount, alternativeFilenames, timeout)
 
 class ThreadingSFTPReceiver(SFTPReceiver):
-    _MAIN_THREAD_ID = threading.main_thread().ident
+    _MAIN_THREAD_ID: ClassVar[Union[int, None]] = threading.main_thread().ident
     _thread_messages: Dict[int, str]
     _print_lock: threading.Lock
     def __init__(self, port: int = 0):
@@ -241,7 +253,7 @@ class ThreadingSFTPReceiver(SFTPReceiver):
             else:
                 self._thread_messages[thread_id] = message
             print('\r', self._thread_messages.values(), end=end)
-    def treceive(self, accept: int = 1, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+    def _gen_receive_sock(self, accept: int, timeout: Union[float, None] = None) -> Generator[socket.socket, None, None]:
         self._sock.settimeout(timeout)
         self._print(f'Listening on {self._sock.getsockname()[1]}')
         while accept:
@@ -251,9 +263,8 @@ class ThreadingSFTPReceiver(SFTPReceiver):
             except socket.timeout:
                 continue
             self._print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
-            thread = threading.Thread(target=self._receive_file, args=(conn_sock, alternativeFilename, timeout), daemon=True)
-            thread.start()
-    def treceiveFriendly(self, name: str, accept: int = 1, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+            yield conn_sock
+    def _gen_receive_friendly_sock(self, name: str, accept: int, timeout: Union[float, None] = None) -> Generator[socket.socket, None, None]:
         self._sock.settimeout(timeout)
         port = self._sock.getsockname()[1]
         service = SSDP(name, port)
@@ -265,9 +276,24 @@ class ThreadingSFTPReceiver(SFTPReceiver):
             except socket.timeout:
                 continue
             self._print(f'Connected: {(socket.gethostbyaddr(conn_addr[0])[0], *conn_addr)}')
+            yield conn_sock
+        service.close()
+    def treceive(self, accept: int, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+        for conn_sock in self._gen_receive_sock(accept, timeout):
             thread = threading.Thread(target=self._receive_file, args=(conn_sock, alternativeFilename, timeout), daemon=True)
             thread.start()
-        service.close()
+    def treceiveFriendly(self, name: str, accept: int, alternativeFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
+        for conn_sock in self._gen_receive_friendly_sock(name, accept, timeout):
+            thread = threading.Thread(target=self._receive_file, args=(conn_sock, alternativeFilename, timeout), daemon=True)
+            thread.start()
+    def treceiveMultiple(self, accept: int, amount: int, alternativeFilenames: Union[List[str], None] = None, timeout: Union[float, None] = None) -> None:
+        for conn_sock in self._gen_receive_sock(accept, timeout):
+            thread = threading.Thread(target=self._receive_multiple_files, args=(conn_sock, amount, alternativeFilenames, timeout), daemon=True)
+            thread.start()
+    def treceiveMultipleFriendly(self, name: str, accept: int, amount: int, alternativeFilenames: Union[List[str], None] = None, timeout: Union[float, None] = None) -> None:
+        for conn_sock in self._gen_receive_friendly_sock(name, accept, timeout):
+            thread = threading.Thread(target=self._receive_file, args=(conn_sock, amount, alternativeFilenames, timeout), daemon=True)
+            thread.start()
 
 def isIP(addr: str) -> bool:
     try:
@@ -276,54 +302,87 @@ def isIP(addr: str) -> bool:
     except socket.error:
         return False
 
+class pint(int):
+    def __new__(cls, x: Union[str, bytes, bytearray]):
+        if (int(x) <= 0):
+            raise ValueError()
+        return super().__new__(cls, x)
+
+class nnint(int):
+    def __new__(cls, x: Union[str, bytes, bytearray]):
+        if (int(x) < 0):
+            raise ValueError()
+        return super().__new__(cls, x)
+
 def main():
     parser = argparse.ArgumentParser(description="Simple File Transfer Protocol",
         conflict_handler='resolve')
     parser.add_argument('-m --mode', dest='mode', choices=['send', 'receive'],
         help='Set mode')
-    parser.add_argument('-t', '--timeout', type=int, dest='timeout',
+    parser.add_argument('-t', '--timeout', type=nnint, dest='timeout',
         help='Set timeout(in seconds)')
-    parser.add_argument('-p', '--port', type=int, dest='port',
-        help='Set port')
+    parser.add_argument('-p', '--port', type=nnint, dest='port',
+        help='SEND_MODE: Port to send to | RECEIVE_MODE: Port to bind to')
     parser.add_argument('-h', '--host', type=str, dest='host',
-        help='SEND_MODE: (IP or Friendly name) to send to | RECEIVE_MODE: Friendly name to use')
-    parser.add_argument('-f', '--file', type=str, dest='filename',
-        help='SEND_MODE: Name of file to send | RECEIVE_MODE: Override received file name')
-    parser.add_argument('-zf', '--zip-file', action='store_true', dest='zipfile',
-        help='SEND_MODE: File/Directory to zip before sending | RECEIVE_MODE: Unzip data after receiving')
+        help='SEND_MODE: (IP or Friendly name) to send to')
+    parser.add_argument('-n', '--name', type=str, dest='name',
+        help='RECEIVE_MODE: Friendly name to use')
+    parser.add_argument('-a', '--accept', type=pint, default=1, dest='accept',
+        help='RECEIVE_MODE: How many connections to accept (default = 1)')
+    parser.add_argument('-c', '--count', type=pint, default=1, dest='count',
+        help='RECEIVE_MODE: How many files to receive (default = 1)')
+    #parser.add_argument('-zf', '--zip-file', action='store_true', dest='zipfile',
+    #    help='SEND_MODE: File/Directory to zip before sending | RECEIVE_MODE: Unzip data after receiving')
+    parser.add_argument('files', type=str, nargs='*',
+        help='SEND_MODE: Name of file(s) to send | RECEIVE_MODE: Override received file(s) name')
     args = parser.parse_args()
     if (args.mode == 'send'):
-        if (args.filename):
+        if (len(args.files) > 0):
+            connect: Callable[[SFTPSender], bool]
             if (isIP(args.host)):
                 if (not args.port):
                     raise Exception('No port specified')
-                sender = SFTPSender()
-                if (sender.connect(args.host, args.port, args.timeout)):
-                    sender.sendFile(args.filename, args.timeout)
-                else:
-                    sender.close()
-                    raise Exception('Unable to connect')
-                sender.close()
+                connect = lambda sender: sender.connect(args.host, args.port, args.timeout)
             else:
-                sender = SFTPSender()
-                if (sender.connectFriendly(args.host, args.timeout)):
-                    sender.sendFile(args.filename, args.timeout)
-                else:
-                    sender.close()
-                    raise Exception('Unable to connect')
+                connect = lambda sender: sender.connectFriendly(args.host, args.timeout)
+            sender = SFTPSender()
+            if (connect(sender)):
+                for file in args.files:
+                    sender.sendFile(file, args.timeout)
+            else:
                 sender.close()
+                raise Exception('Unable to connect')
+            sender.close()
         else:
             raise Exception('No file specified')
     elif (args.mode == 'receive'):
         if (not args.port):
             args.port = 0
-        if (isIP(args.host)):
+        if (args.accept == 1):
             receiver = SFTPReceiver(args.port)
-            receiver.receive(args.filename, args.timeout)
+            if (args.count == 1):
+                if (args.name):
+                    receiver.receiveFriendly(args.name, args.files, args.timeout)
+                else:
+                    receiver.receive(args.files, args.timeout)
+            else:
+                if (args.name):
+                    receiver.receiveMultipleFriendly(args.name, args.count, args.files, args.timeout)
+                else:
+                    receiver.receiveMultiple(args.count, args.files, args.timeout)
             receiver.close()
         else:
-            receiver = SFTPReceiver(args.port)
-            receiver.receiveFriendly(args.host, args.filename, args.timeout)
+            receiver = ThreadingSFTPReceiver(args.port)
+            if (args.count == 1):
+                if (args.name):
+                    receiver.treceiveFriendly(args.name, args.accept, args.files, args.timeout)
+                else:
+                    receiver.treceive(args.accept, args.files, args.timeout)
+            else:
+                if (args.name):
+                    receiver.treceiveMultipleFriendly(args.name, args.accept, args.count, args.files, args.timeout)
+                else:
+                    receiver.treceiveMultiple(args.accept, args.count, args.files, args.timeout)
             receiver.close()
     else:
         raise Exception('Unknown mode')
