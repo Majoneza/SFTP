@@ -45,6 +45,10 @@ class Address(NamedTuple):
     port: int
 
 class SSDP:
+    class SSDP_TYPE:
+        DISCOVER = 0
+        RESPONSE = 1
+        BAD_REQUEST = 2
     SSDP_VERSION: Final[int] = 1
     SSDP_MULTICAST: Final[str] = '239.255.255.250'
     SSDP_PORT: Final[int] = 12000
@@ -54,7 +58,7 @@ class SSDP:
     _service_thread: Union[threading.Thread, None]
     _service_event: Union[threading.Event, None]
     def __init__(self, name: str, port: int):
-        self._service_name = struct.pack('16s', name.encode('UTF-8'))
+        self._service_name = struct.pack('!16s', name.encode('UTF-8'))
         self._service_port = port
         self._service_thread = None
         self._service_event = None
@@ -66,26 +70,21 @@ class SSDP:
         self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
     def loop(self) -> None:
         try:
-            packet, addr = self._sock.recvfrom(18)
-        except (BlockingIOError, OSError):
-            return
-        header = packet[:2]
-        data = packet[2:]
-        version: int;type: int;name: bytes
-        try:
-            version, type = struct.unpack('BB', header)
-            if (version == self.SSDP_VERSION and type == 0):
-                name, = struct.unpack('16s', data)
-                if (name == self._service_name):
-                    response = struct.pack('BB16sH', self.SSDP_VERSION, 1,
-                        self._service_name, self._service_port)
+            data, addr = self._sock.recvfrom(18)
+        except (BlockingIOError, BrokenPipeError, OSError):
+            return None
+        if (addr):
+            try:
+                version, type, name = struct.unpack('!BB16s', data)
+                if (version == self.SSDP_VERSION and type == self.SSDP_TYPE.DISCOVER
+                        and name == self._service_name):
+                    response = struct.pack('!BB16sH', self.SSDP_VERSION,
+                        self.SSDP_TYPE.RESPONSE, self._service_name, self._service_port)
                     self._sock.sendto(response, addr)
-            else:
-                response = struct.pack('BB', self.SSDP_VERSION, 2)
+            except struct.error:
+                response = struct.pack('!BB16sH', self.SSDP_VERSION,
+                    self.SSDP_TYPE.BAD_REQUEST, b'', 0)
                 self._sock.sendto(response, addr)
-        except struct.error:
-            response = struct.pack('BB', self.SSDP_VERSION, 2)
-            self._sock.sendto(response, addr)
     def _inf_loop(self):
         self._service_event = threading.Event()
         self._sock.setblocking(True)
@@ -106,7 +105,8 @@ class SSDP:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-        request = struct.pack('BB16s', cls.SSDP_VERSION, 0, name.encode('UTF-8'))
+        request = struct.pack('!BB16s', cls.SSDP_VERSION,
+            cls.SSDP_TYPE.DISCOVER, name.encode('UTF-8'))
         try:
             sock.sendto(request, (cls.SSDP_MULTICAST, cls.SSDP_PORT))
             response, addr = sock.recvfrom(20)
@@ -114,11 +114,13 @@ class SSDP:
             sock.close()
             return None
         sock.close()
-        version, type = struct.unpack('BB', response[:2])
-        if (version == cls.SSDP_VERSION and type == 1):
-            res_name, res_port = struct.unpack('16sH', response[2:])
-            if (res_name == request[2:]):
-                return Address(addr[0], res_port)
+        try:
+            version, type, res_name, res_port = struct.unpack('!BB16sH', response)
+        except struct.error:
+            return None
+        if (version == cls.SSDP_VERSION and type == cls.SSDP_TYPE.RESPONSE
+                and res_name == request[2:]):
+            return Address(addr[0], res_port)
         return None
 
 class SFTP(metaclass=abc.ABCMeta):
