@@ -95,9 +95,11 @@ class SSDP:
         self._service_thread = threading.Thread(target=self._inf_loop, daemon=True)
         self._service_thread.start()
     def close(self) -> None:
-        self._sock.close()
-        if (self._service_thread and self._service_event):
+        if (self._service_event):
             self._service_event.set()
+        self._sock.shutdown(socket.SHUT_RD)
+        self._sock.close()
+        if (self._service_thread):
             self._service_thread.join()
     @classmethod
     def find_service(cls, name: str, timeout: Union[float, None] = None) -> Union[Address, None]:
