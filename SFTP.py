@@ -326,8 +326,10 @@ class nnint(int):
 def main():
     parser = argparse.ArgumentParser(description="Simple File Transfer Protocol",
         conflict_handler='resolve')
-    parser.add_argument('-m --mode', dest='mode', choices=['send', 'receive', 's', 'r'],
-        help='Set mode to SEND or RECEIVE')
+    parser.add_argument('-s --send', action='store_true', dest='send',
+        help='Set mode to SEND')
+    parser.add_argument('-r --receive', action='store_true', dest='receive',
+        help='Set mode to RECEIVE')
     parser.add_argument('-t', '--timeout', type=nnint, dest='timeout',
         help='Set timeout(in seconds)')
     parser.add_argument('-p', '--port', type=nnint, dest='port',
@@ -348,7 +350,7 @@ def main():
         help='SEND_MODE: Name of file(s) to send | RECEIVE_MODE: Override received file(s) name')
     args = parser.parse_args()
     os.chdir(args.dir)
-    if (args.mode == 's' or args.mode == 'send'):
+    if (args.send):
         if (len(args.files) > 0):
             connect: Callable[[SFTPSender], bool]
             if (isIP(args.host)):
@@ -367,7 +369,7 @@ def main():
             sender.close()
         else:
             raise Exception('No file specified')
-    elif (args.mode == 'r' or args.mode == 'receive'):
+    elif (args.receive):
         args.files = CustomList(args.files)
         if (not args.port):
             args.port = 0
