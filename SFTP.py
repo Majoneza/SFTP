@@ -147,7 +147,7 @@ class SFTPSender(SFTP):
         file = open(filename, 'rb')
         # Pack the packet
         filename_bytes = filename.encode('UTF-8')
-        data = struct.pack('BHQ', SFTP_VERSION, len(filename_bytes), stat.st_size)
+        data = struct.pack('!BHQ', SFTP_VERSION, len(filename_bytes), stat.st_size)
         self._sock.sendall(data)
         # Send filename
         self._sock.sendall(filename_bytes)
@@ -178,8 +178,8 @@ class SFTPReceiver(SFTP):
     def _receive_file(self, conn_sock: socket.socket, overrideFilename: Union[str, None], timeout: Union[float, None]) -> str:
         conn_sock.settimeout(timeout)
         # Version, File size, Filename characters count
-        data = conn_sock.recv(8)
-        version, filename_characters_amount, file_size = struct.unpack('BHQ', data)
+        data = conn_sock.recv(11)
+        version, filename_characters_amount, file_size = struct.unpack('!BHQ', data)
         if (version != SFTP_VERSION):
             raise Exception('Unsupported protocol version')
         # Filename
