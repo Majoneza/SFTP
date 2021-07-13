@@ -3,7 +3,7 @@
 #|----------- Packet -----------|
 #|          VERSION(1B)         |
 #|  NAME_CHARACTERS_AMOUNT(2B)  |
-#|         FILE_SIZE(4B)        |
+#|         FILE_SIZE(8B)        |
 #|          FILE_NAME           |
 #|          FILE_DATA           |
 #|------------------------------|
@@ -147,7 +147,7 @@ class SFTPSender(SFTP):
         file = open(filename, 'rb')
         # Pack the packet
         filename_bytes = filename.encode('UTF-8')
-        data = struct.pack('BHi', SFTP_VERSION, len(filename_bytes), stat.st_size)
+        data = struct.pack('BHQ', SFTP_VERSION, len(filename_bytes), stat.st_size)
         self._sock.sendall(data)
         # Send filename
         self._sock.sendall(filename_bytes)
@@ -165,8 +165,8 @@ class SFTPSender(SFTP):
         print()
         file.close()
     def sendZip(self, filename: str, timeout: Union[float, None] = None) -> None:
-        name = shutil.make_archive(filename, 'zip')
-        self.sendFile(name, timeout)
+        new_filename = shutil.make_archive(filename, 'zip')
+        self.sendFile(new_filename, timeout)
 
 class SFTPReceiver(SFTP):
     def __init__(self, port: int = 0):
@@ -179,7 +179,7 @@ class SFTPReceiver(SFTP):
         conn_sock.settimeout(timeout)
         # Version, File size, Filename characters count
         data = conn_sock.recv(8)
-        version, filename_characters_amount, file_size = struct.unpack('BHi', data)
+        version, filename_characters_amount, file_size = struct.unpack('BHQ', data)
         if (version != SFTP_VERSION):
             raise Exception('Unsupported protocol version')
         # Filename
@@ -259,11 +259,11 @@ class SFTPReceiver(SFTP):
     def receiveZip(self, overrideFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
         conn_sock = self._receive_sock(timeout)
         filename = self._receive_file(conn_sock, overrideFilename, timeout)
-        shutil.unpack_archive(filename)
+        shutil.unpack_archive(filename, format='zip')
     def receiveFriendlyZip(self, name: str, overrideFilename: Union[str, None] = None, timeout: Union[float, None] = None) -> None:
         conn_sock = self._receive_friendly_sock(name, timeout)
         filename = self._receive_file(conn_sock, overrideFilename, timeout)
-        shutil.unpack_archive(filename)
+        shutil.unpack_archive(filename, format='zip')
     def receiveMultiple(self, amount: int, overrideFilenames: Union[List[str], None] = None, timeout: Union[float, None] = None) -> None:
         conn_sock = self._receive_sock(timeout)
         self._receive_multiple_files(conn_sock, amount, overrideFilenames, timeout)
@@ -342,8 +342,8 @@ def main():
         help='RECEIVE_MODE: How many files to receive (default = 1)')
     parser.add_argument('-d', '--dir', type=str, default='./', dest='dir',
         help='Set root directory(default=\'./\')')
-    parser.add_argument('-zf', '--zip-file', action='store_true', dest='zipfile',
-        help='SEND_MODE: File/Directory to zip before sending | RECEIVE_MODE: Unzip data after receiving')
+    parser.add_argument('-zf', '--zip-file', type=str, dest='zipfile',
+        help='SEND_MODE: File(s)/Directory to zip before sending | RECEIVE_MODE: Unzip data after receiving')
     parser.add_argument('files', type=str, nargs='*',
         help='SEND_MODE: Name of file(s) to send | RECEIVE_MODE: Override received file(s) name')
     args = parser.parse_args()
