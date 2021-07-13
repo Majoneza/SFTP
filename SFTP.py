@@ -342,7 +342,7 @@ def main():
         help='RECEIVE_MODE: How many files to receive (default = 1)')
     parser.add_argument('-d', '--dir', type=str, default='./', dest='dir',
         help='Set root directory(default=\'./\')')
-    parser.add_argument('-zf', '--zip-file', type=str, dest='zipfile',
+    parser.add_argument('-zf', '--zip-file', action='store_true', dest='zipfile',
         help='SEND_MODE: File(s)/Directory to zip before sending | RECEIVE_MODE: Unzip data after receiving')
     parser.add_argument('files', type=str, nargs='*',
         help='SEND_MODE: Name of file(s) to send | RECEIVE_MODE: Override received file(s) name')
