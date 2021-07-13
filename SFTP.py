@@ -326,9 +326,9 @@ class nnint(int):
 def main():
     parser = argparse.ArgumentParser(description="Simple File Transfer Protocol",
         conflict_handler='resolve')
-    parser.add_argument('-s --send', action='store_true', dest='send',
+    parser.add_argument('-s', '--send', action='store_true', dest='send',
         help='Set mode to SEND')
-    parser.add_argument('-r --receive', action='store_true', dest='receive',
+    parser.add_argument('-r', '--receive', action='store_true', dest='receive',
         help='Set mode to RECEIVE')
     parser.add_argument('-t', '--timeout', type=nnint, dest='timeout',
         help='Set timeout(in seconds)')
