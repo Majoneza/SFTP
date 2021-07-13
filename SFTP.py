@@ -337,9 +337,9 @@ def main():
     parser.add_argument('-n', '--name', type=str, dest='name',
         help='RECEIVE_MODE: Friendly name to use')
     parser.add_argument('-a', '--accept', type=pint, default=1, dest='accept',
-        help='RECEIVE_MODE: How many connections to accept (default = 1)')
+        help='RECEIVE_MODE: How many connections to accept (default=1)')
     parser.add_argument('-c', '--count', type=pint, default=1, dest='count',
-        help='RECEIVE_MODE: How many files to receive (default = 1)')
+        help='RECEIVE_MODE: How many files to receive (default=1)')
     parser.add_argument('-d', '--dir', type=str, default='./', dest='dir',
         help='Set root directory(default=\'./\')')
     parser.add_argument('-zf', '--zip-file', action='store_true', dest='zipfile',
