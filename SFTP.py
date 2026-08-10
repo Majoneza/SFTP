@@ -6,6 +6,8 @@ import hashlib
 import hmac
 import json
 import os
+import sys
+import time
 from pathlib import Path
 import secrets
 import shutil
@@ -121,6 +123,31 @@ def json_decode_schema(s: str | bytes | bytearray, schema: Schema) -> Any:
         return json_verify_schema(value, schema)
     except JSONSchemaError as exc:
         raise ProtocolError("invalid JSON schema") from exc
+
+
+def progress[T](iterable: Iterable[T], update_interval: float = 0.5) -> Iterator[T]:
+    start = last_update = time.monotonic()
+
+    for i, item in enumerate(iterable, 1):
+        yield item
+
+        now = time.monotonic()
+        elapsed = now - start
+
+        if (now - last_update) > update_interval:
+            rate = i / elapsed if elapsed else 0
+
+            print(
+                f"\rProcessed: {i:,} | "
+                f"Elapsed: {elapsed:.1f}s | "
+                f"Rate: {rate:,.1f}/s",
+                end="",
+                file=sys.stderr,
+            )
+
+            last_update = now
+
+    print(file=sys.stderr)
 
 
 def recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -517,7 +544,9 @@ def _tls_psk_server(
     if not psk:
         raise ValueError("PSK must not be empty")
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.set_psk_server_callback(lambda client_identity: string_to_bytes(psk), identity)
+    context.set_psk_server_callback(
+        lambda client_identity: string_to_bytes(psk), identity
+    )
     return context.wrap_socket(sock, server_side=True)
 
 
@@ -600,7 +629,7 @@ def _send_transfer(
     message, value = recv_json(sock)
     if message != MessageType.ACCEPT:
         raise ProtocolError(value.get("error", "transfer rejected"))
-    for chunk in iter_archive(sources, compressed):
+    for chunk in progress(iter_archive(sources, compressed)):
         send_frame(sock, MessageType.ARCHIVE_CHUNK, chunk)
     send_frame(sock, MessageType.ARCHIVE_END, b"")
     message, value = recv_json(sock)
@@ -667,7 +696,7 @@ def _receive_transfer(
         send_json(connection, MessageType.ACCEPT, {})
         staging = _staging_path(destination)
         try:
-            extract_archive(_archive_chunks(connection), staging, compressed)
+            extract_archive(progress(_archive_chunks(connection)), staging, compressed)
             _commit(staging, destination, overwrite)
         except BaseException as exc:
             shutil.rmtree(staging, ignore_errors=True)
@@ -938,9 +967,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--port", type=int, help="Receiver TCP port.")
     send.add_argument("--token", help="Pairing token for application authentication.")
     send.add_argument("--psk", help="TLS-PSK secret; enables encrypted transport.")
-    send.add_argument(
-        "--cafile", help="CA certificate file used to verify the peer."
-    )
+    send.add_argument("--cafile", help="CA certificate file used to verify the peer.")
     send.add_argument("--certfile", help="Local TLS certificate file.")
     send.add_argument("--keyfile", help="Local TLS private key file.")
     send.add_argument(
